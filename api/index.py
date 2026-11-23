@@ -1,95 +1,153 @@
-"""靈感選書扭蛋機 Flask 應用程式（Vercel Serverless 入口）。"""
-
+import os
 import random
-import time
-from threading import Lock
-
+from flask import Flask, jsonify, render_template_string, request
 import requests
-from flask import Flask, jsonify, render_template, request
 
 app = Flask(__name__)
 
-# 請將此信箱改成方便 Open Library 聯絡的信箱；也可用環境變數覆寫。
-CONTACT_EMAIL = "your-email@example.com"
+# Open Library 官方建議在 User-Agent 附上聯絡信箱（也可在 Vercel 環境變數設定 CONTACT_EMAIL）
+CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "0a0qaqtt@gmail.com")
 USER_AGENT = f"BookGachaMachine/1.0 ({CONTACT_EMAIL})"
-API_TIMEOUT_SECONDS = 5
-CACHE_SECONDS = 300
 
-SUBJECTS = {
-    "science_fiction": "🚀 科幻",
-    "mystery": "🔍 推理懸疑",
-    "fantasy": "🧙 奇幻冒險",
-    "psychology": "🧠 心理學",
-    "history": "🏛️ 歷史",
-    "travel": "✈️ 旅遊",
-    "philosophy": "💡 哲學",
-}
+# 扭蛋主題清單
+SUBJECTS = [
+    {"id": "random", "label": "🎲 隨機驚喜"},
+    {"id": "science_fiction", "label": "🚀 科幻"},
+    {"id": "mystery", "label": "🔍 推理懸疑"},
+    {"id": "fantasy", "label": "🧙 奇幻冒險"},
+    {"id": "psychology", "label": "🧠 心理學"},
+    {"id": "history", "label": "🏛️ 歷史"},
+    {"id": "travel", "label": "✈️ 旅遊"},
+    {"id": "philosophy", "label": "💡 哲學"},
+]
 
-# 只在單一 Serverless 執行個體內快取短時間，避免短時間重複查詢。
-_cache = {}
-_cache_lock = Lock()
+VALID_SUBJECT_IDS = [s["id"] for s in SUBJECTS if s["id"] != "random"]
+SUBJECT_LABELS = {s["id"]: s["label"] for s in SUBJECTS}
 
-
-def get_subject_books(subject):
-    """取得並短暫快取主題書單；外部 API 失敗時交由呼叫端處理。"""
-    now = time.monotonic()
-    with _cache_lock:
-        cached = _cache.get(subject)
-        if cached and now - cached[0] < CACHE_SECONDS:
-            return cached[1]
-
-    response = requests.get(
-        f"https://openlibrary.org/subjects/{subject}.json",
-        params={"limit": 30},
-        headers={"User-Agent": USER_AGENT},
-        timeout=API_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
-    works = response.json().get("works", [])
-    with _cache_lock:
-        _cache[subject] = (now, works)
-    return works
-
-
-@app.get("/")
-def home():
-    return render_template("index.html", subjects=SUBJECTS)
-
-
-@app.post("/api/draw")
-def draw_book():
-    """抽出一本 Open Library 回傳的書，並將失敗轉成友善 JSON。"""
-    payload = request.get_json(silent=True) or {}
-    subject = payload.get("subject", "random")
-    if subject == "random":
-        subject = random.choice(list(SUBJECTS))
-    if subject not in SUBJECTS:
-        return jsonify(error="這個主題目前不存在，請重新選擇。"), 400
-
-    try:
-        works = get_subject_books(subject)
-    except (requests.RequestException, ValueError, TypeError):
-        app.logger.exception("Open Library 查詢失敗：%s", subject)
-        return jsonify(error="暫時無法取得書籍資料，請稍後再試一次。"), 502
-
-    if not works:
-        return jsonify(error="這個主題暫時沒有找到書籍，換個主題再試試吧。"), 404
-
-    book = random.choice(works)
-    return jsonify(
-        book={
-            "key": book.get("key", ""),
-            "title": book.get("title") or "未提供書名",
-            "authors": [author.get("name", "") for author in book.get("authors", []) if author.get("name")],
-            "first_publish_year": book.get("first_publish_year"),
-            "subjects": (book.get("subject") or [])[:3],
-            "cover_id": book.get("cover_id"),
-            "cover_url": f"https://covers.openlibrary.org/b/id/{book['cover_id']}-L.jpg" if book.get("cover_id") else None,
-            "subject": subject,
-            "subject_label": SUBJECTS[subject],
-        }
-    )
-
-
-if __name__ == "__main__":
-    app.run(debug=True)
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>靈感選書扭蛋機</title>
+  <style>
+    :root {
+      --bg: #fdfaf5;
+      --card: #ffffff;
+      --ink: #2c2a29;
+      --muted: #6f6a66;
+      --accent: #e06d53;
+      --accent-dark: #c4563d;
+      --border: #ebe4dc;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Noto Sans TC", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.6;
+    }
+    .container {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 2rem;
+      letter-spacing: 0.04em;
+    }
+    .subtitle {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 24px;
+      box-shadow: 0 8px 24px rgba(44, 42, 41, 0.05);
+      margin-bottom: 24px;
+    }
+    .subjects {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: center;
+      margin-bottom: 22px;
+    }
+    .subject-btn {
+      border: 1px solid var(--border);
+      background: #faf6f0;
+      color: var(--ink);
+      padding: 8px 14px;
+      border-radius: 999px;
+      cursor: pointer;
+      font-size: 0.92rem;
+      transition: all 0.18s ease;
+    }
+    .subject-btn:hover { border-color: var(--accent); }
+    .subject-btn.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    .gacha-action {
+      text-align: center;
+    }
+    .draw-btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 14px 32px;
+      border-radius: 999px;
+      font-size: 1.05rem;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 6px 16px rgba(224, 109, 83, 0.28);
+      transition: transform 0.15s ease, background 0.15s ease;
+    }
+    .draw-btn:hover:not(:disabled) {
+      background: var(--accent-dark);
+      transform: translateY(-1px);
+    }
+    .draw-btn:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+    }
+    .capsule {
+      display: inline-block;
+      font-size: 2.2rem;
+      margin-bottom: 8px;
+    }
+    .shaking {
+      animation: shake 0.45s infinite;
+    }
+    @keyframes shake {
+      0%, 100% { transform: rotate(0deg); }
+      25% { transform: rotate(-14deg); }
+      75% { transform: rotate(14deg); }
+    }
+    .error-box {
+      display: none;
+      background: #fff2f0;
+      border: 1px solid #ffccc7;
+      color: #a8071a;
+      padding: 14px 16px;
+      border-radius: 12px;
+      margin-top: 16px;
+      text-align: center;
+    }
+    .result-card {
+      display: none;
+      gap: 22px;
+      align-items: flex-start;
+    }
+    .result-card.show {
